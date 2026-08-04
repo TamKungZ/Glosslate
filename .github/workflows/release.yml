@@ -907,19 +907,102 @@ jobs:
           EOF
           fi
 
-          find "$WORK_DIR/release" -maxdepth 1 -name 'Glosslate-v*-linux-x64.deb' -exec cp {} apt/pool/main/g/glosslate/ \;
-          find "$WORK_DIR/release" -maxdepth 1 -name 'Glosslate-v*-linux-x64.deb.asc' -exec cp {} apt/pool/main/g/glosslate/ \;
+          # Store the DEB using Debian's conventional package_version_arch filename.
+          # The metadata generator below also reads Architecture from inside each .deb,
+          # so repository correctness does not depend on artifact filename conventions.
+          DEB_SOURCE="$WORK_DIR/release/Glosslate-v${VERSION}-linux-x64.deb"
+          if [ ! -f "$DEB_SOURCE" ]; then
+            echo "Expected DEB not found: $DEB_SOURCE"
+            exit 1
+          fi
 
-          prune_package_files 5 './apt/pool/main/g/glosslate/Glosslate-v*-linux-x64.deb'
+          DEB_PACKAGE="$(dpkg-deb -f "$DEB_SOURCE" Package)"
+          DEB_VERSION="$(dpkg-deb -f "$DEB_SOURCE" Version)"
+          DEB_ARCH="$(dpkg-deb -f "$DEB_SOURCE" Architecture)"
+          DEB_DEST="apt/pool/main/g/glosslate/${DEB_PACKAGE}_${DEB_VERSION}_${DEB_ARCH}.deb"
+
+          cp "$DEB_SOURCE" "$DEB_DEST"
+          if [ -f "$DEB_SOURCE.asc" ]; then
+            cp "$DEB_SOURCE.asc" "$DEB_DEST.asc"
+          fi
+
+          prune_package_files 5 './apt/pool/main/g/glosslate/*.deb'
 
           cd "$SITE_DIR/apt"
-          dpkg-scanpackages --multiversion --arch amd64 pool > dists/stable/main/binary-amd64/Packages
-          gzip -9fk dists/stable/main/binary-amd64/Packages
 
-          ARCHITECTURES="amd64"
-          if [ -d dists/stable/main/binary-arm64 ]; then
-            ARCHITECTURES="amd64 arm64"
+          # Build one complete package list without --arch. dpkg-scanpackages --arch
+          # can omit packages whose filenames do not follow *_<arch>.deb. apt-ftparchive
+          # reads Architecture from the package control metadata instead.
+          ALL_PACKAGES="$(mktemp)"
+          apt-ftparchive packages pool > "$ALL_PACKAGES"
+
+          mapfile -t APT_ARCHES < <(
+            while IFS= read -r -d '' deb; do
+              arch="$(dpkg-deb -f "$deb" Architecture)"
+              if [ "$arch" != "all" ]; then
+                printf '%s\n' "$arch"
+              fi
+            done < <(find pool -type f -name '*.deb' -print0) | sort -u
+          )
+
+          if [ "${#APT_ARCHES[@]}" -eq 0 ]; then
+            echo "No architecture-specific DEB packages found in apt/pool."
+            exit 1
           fi
+
+          for arch in "${APT_ARCHES[@]}"; do
+            index="dists/stable/main/binary-${arch}/Packages"
+            mkdir -p "$(dirname "$index")"
+
+            awk -v wanted="$arch" '
+              BEGIN { RS=""; FS="\n"; ORS="\n\n" }
+              {
+                package_arch=""
+                for (i = 1; i <= NF; i++) {
+                  if ($i ~ /^Architecture:[[:space:]]*/) {
+                    package_arch=$i
+                    sub(/^Architecture:[[:space:]]*/, "", package_arch)
+                    break
+                  }
+                }
+                if (package_arch == wanted || package_arch == "all") print $0
+              }
+            ' "$ALL_PACKAGES" > "$index"
+
+            gzip -9fk "$index"
+          done
+
+          rm -f "$ALL_PACKAGES"
+
+          # Safety check: every DEB must be present in the Packages index for its
+          # architecture. Fail before signing/pushing if any package is missing.
+          while IFS= read -r -d '' deb; do
+            arch="$(dpkg-deb -f "$deb" Architecture)"
+            rel="${deb#./}"
+
+            if [ "$arch" = "all" ]; then
+              for target_arch in "${APT_ARCHES[@]}"; do
+                if ! grep -Fqx "Filename: $rel" "dists/stable/main/binary-${target_arch}/Packages"; then
+                  echo "Missing Architecture: all package from binary-${target_arch}: $rel"
+                  exit 1
+                fi
+              done
+            else
+              index="dists/stable/main/binary-${arch}/Packages"
+              if [ ! -f "$index" ] || ! grep -Fqx "Filename: $rel" "$index"; then
+                echo "Package missing from binary-${arch}/Packages: $rel"
+                exit 1
+              fi
+            fi
+          done < <(find pool -type f -name '*.deb' -print0)
+
+          # Explicitly verify the package being published in this release.
+          if ! grep -Fqx "Filename: ${DEB_DEST#apt/}" "dists/stable/main/binary-${DEB_ARCH}/Packages"; then
+            echo "Glosslate was not indexed in APT metadata: ${DEB_DEST#apt/}"
+            exit 1
+          fi
+
+          ARCHITECTURES="$(printf '%s\n' "${APT_ARCHES[@]}" | sort -u | xargs)"
 
           apt-ftparchive \
             -o APT::FTPArchive::Release::Origin="TamKungZ_" \

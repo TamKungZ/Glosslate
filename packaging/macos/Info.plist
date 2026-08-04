@@ -28,7 +28,13 @@
     <key>CFBundleVersion</key>
     <string>1</string>
 
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+
     <key>NSHighResolutionCapable</key>
     <true/>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © TamKungZ_</string>
 </dict>
 </plist>

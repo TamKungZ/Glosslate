@@ -3,8 +3,10 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <OutputType Condition="$([MSBuild]::IsOSPlatform('Windows'))">WinExe</OutputType>
+
     <TargetFramework>net8.0</TargetFramework>
     <TargetFramework Condition="$([MSBuild]::IsOSPlatform('Windows'))">net8.0-windows</TargetFramework>
+
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -17,18 +19,13 @@
     <Authors>TamKungZ_</Authors>
     <Company>TamKungZ_</Company>
     <Copyright>Copyright © TamKungZ_</Copyright>
+    <Description>Cross-platform glossary-aware translation tool for flat JSON localization files.</Description>
     <PackageProjectUrl>https://dev.tamkungz.me</PackageProjectUrl>
     <RepositoryUrl>https://github.com/TamKungZ/Glosslate</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
-    <Description>Cross-platform glossary-aware translation tool for flat JSON localization files.</Description>
 
     <ApplicationIcon Condition="$([MSBuild]::IsOSPlatform('Windows'))">Assets/app.ico</ApplicationIcon>
 
-    <!--
-      Eto.Forms needs one native UI backend. Select it from the host OS so the
-      same project file can be restored and built on Windows, Linux, and macOS.
-      EtoBackend may also be overridden explicitly, e.g. -p:EtoBackend=Gtk.
-    -->
     <EtoBackend Condition="'$(EtoBackend)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">Wpf</EtoBackend>
     <EtoBackend Condition="'$(EtoBackend)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">Gtk</EtoBackend>
     <EtoBackend Condition="'$(EtoBackend)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">Mac64</EtoBackend>
@@ -59,7 +56,6 @@
   <ItemGroup>
     <EmbeddedResource Include="Assets/app.ico" LogicalName="Glosslate.Assets.app.ico" />
     <EmbeddedResource Include="Assets/app.png" LogicalName="Glosslate.Assets.app.png" />
-
     <Content Include="Assets/app.icns">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>

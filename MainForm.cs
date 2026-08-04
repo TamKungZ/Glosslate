@@ -28,6 +28,21 @@ public class MainForm : Form
         Title = "Glosslate - Glossary-aware Translation Tool";
         ClientSize = new Size(1000, 620);
 
+        if (OperatingSystem.IsWindows())
+        {
+            Icon = Icon.FromResource(
+                "Glosslate.Assets.app.ico",
+                GetType().Assembly
+            );
+        }
+        else if (OperatingSystem.IsLinux())
+        {
+            Icon = Icon.FromResource(
+                "Glosslate.Assets.app.png",
+                GetType().Assembly
+            );
+        }
+
         _settings = _settingsService.Load();
         LoadSavedGlossary();
 

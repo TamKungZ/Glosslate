@@ -14,6 +14,8 @@
     <Authors>TamKungZ_</Authors>
     <Description>Cross-platform glossary-aware translation tool for flat JSON localization files.</Description>
 
+    <ApplicationIcon Condition="$([MSBuild]::IsOSPlatform('Windows'))">Assets/app.ico</ApplicationIcon>
+
     <!--
       Eto.Forms needs one native UI backend. Select it from the host OS so the
       same project file can be restored and built on Windows, Linux, and macOS.
@@ -45,5 +47,14 @@
       Condition="'$(EtoBackend)' != 'Wpf' and '$(EtoBackend)' != 'Gtk' and '$(EtoBackend)' != 'Mac64'"
       Text="Unsupported or undetected Eto backend '$(EtoBackend)'. Use Wpf, Gtk, or Mac64 via -p:EtoBackend=&lt;backend&gt;." />
   </Target>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/app.ico" LogicalName="Glosslate.Assets.app.ico" />
+    <EmbeddedResource Include="Assets/app.png" LogicalName="Glosslate.Assets.app.png" />
+
+    <Content Include="Assets/app.icns">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
 
 </Project>

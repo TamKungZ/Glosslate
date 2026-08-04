@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Glosslate
+Comment=Glossary-aware translation tool
+Exec=glosslate
+Icon=glosslate
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=true

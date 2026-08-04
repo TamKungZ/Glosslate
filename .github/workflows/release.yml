@@ -55,6 +55,24 @@ jobs:
             [Convert]::FromBase64String($clean)
             )
 
+            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+            "signing.pfx",
+            $env:SELF_SIGN_PASSWORD,
+            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+            )
+
+            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
+            "Root",
+            "CurrentUser"
+            )
+
+            $store.Open(
+            [System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
+            )
+
+            $store.Add($cert)
+            $store.Close()
+
             $signtool = Get-ChildItem `
             "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" `
             -ErrorAction SilentlyContinue |
@@ -84,15 +102,15 @@ jobs:
       - name: Sign Windows executable
         shell: pwsh
         env:
-          SELF_SIGN_PASSWORD: ${{ secrets.SELF_SIGN_PASSWORD }}
+            SELF_SIGN_PASSWORD: ${{ secrets.SELF_SIGN_PASSWORD }}
         run: |
-          & "$env:SIGNTOOL" sign `
+            & "$env:SIGNTOOL" sign `
             /fd SHA256 `
             /f signing.pfx `
             /p "$env:SELF_SIGN_PASSWORD" `
             "publish\windows-x64\Glosslate.exe"
 
-          & "$env:SIGNTOOL" verify `
+            & "$env:SIGNTOOL" verify `
             /pa `
             /v `
             "publish\windows-x64\Glosslate.exe"
@@ -235,25 +253,25 @@ jobs:
       - name: Sign Windows installers
         shell: pwsh
         env:
-          SELF_SIGN_PASSWORD: ${{ secrets.SELF_SIGN_PASSWORD }}
+            SELF_SIGN_PASSWORD: ${{ secrets.SELF_SIGN_PASSWORD }}
         run: |
-          $setup = "dist\Glosslate-v${{ env.VERSION }}-windows-x64-setup.exe"
-          $msi = "dist\Glosslate-v${{ env.VERSION }}-windows-x64.msi"
+            $setup = "dist\Glosslate-v${{ env.VERSION }}-windows-x64-setup.exe"
+            $msi = "dist\Glosslate-v${{ env.VERSION }}-windows-x64.msi"
 
-          & "$env:SIGNTOOL" sign `
+            & "$env:SIGNTOOL" sign `
             /fd SHA256 `
             /f signing.pfx `
             /p "$env:SELF_SIGN_PASSWORD" `
             "$setup"
 
-          & "$env:SIGNTOOL" sign `
+            & "$env:SIGNTOOL" sign `
             /fd SHA256 `
             /f signing.pfx `
             /p "$env:SELF_SIGN_PASSWORD" `
             "$msi"
 
-          & "$env:SIGNTOOL" verify /pa /v "$setup"
-          & "$env:SIGNTOOL" verify /pa /v "$msi"
+            & "$env:SIGNTOOL" verify /pa /v "$setup"
+            & "$env:SIGNTOOL" verify /pa /v "$msi"
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -553,22 +571,24 @@ jobs:
             -d user \
             -s "$KEYCHAIN" login.keychain-db
 
-            IDENTITY="$(
-            security find-identity \
-                -v \
-                -p codesigning \
-                "$KEYCHAIN" |
-            awk '/[0-9A-F]{40}/ { print $2; exit }'
+            CERT_HASH="$(
+            security find-certificate \
+                -a \
+                -Z \
+                "$KEYCHAIN" \
+                | awk '/SHA-1 hash:/ { print $3; exit }'
             )"
 
-            if [ -z "$IDENTITY" ]; then
-            echo "No macOS code-signing identity found"
-            security find-identity -v "$KEYCHAIN" || true
+            if [ -z "$CERT_HASH" ]; then
+            echo "Signing certificate not found"
+            security find-certificate -a -Z "$KEYCHAIN" || true
             exit 1
             fi
 
+            echo "Using certificate: $CERT_HASH"
+
             echo "MAC_SIGN_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
-            echo "MAC_SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+            echo "MAC_SIGN_IDENTITY=$CERT_HASH" >> "$GITHUB_ENV"
 
       - name: Restore
         run: |
@@ -610,9 +630,24 @@ jobs:
       - name: Sign app bundle
         shell: bash
         run: |
-          codesign             --force             --deep             --sign "$MAC_SIGN_IDENTITY"             --keychain "$MAC_SIGN_KEYCHAIN"             --timestamp=none             dist/Glosslate.app
+            codesign \
+            --force \
+            --deep \
+            --sign "$MAC_SIGN_IDENTITY" \
+            --keychain "$MAC_SIGN_KEYCHAIN" \
+            --timestamp=none \
+            dist/Glosslate.app
 
-          codesign             --verify             --deep             --strict             --verbose=2             dist/Glosslate.app
+            codesign \
+            --verify \
+            --deep \
+            --strict \
+            --verbose=2 \
+            dist/Glosslate.app
+
+            codesign \
+            -dvvv \
+            dist/Glosslate.app
 
       - name: Create app ZIP
         shell: bash
@@ -645,31 +680,35 @@ jobs:
       - name: Sign DMG
         shell: bash
         run: |
-          codesign             --force             --sign "$MAC_SIGN_IDENTITY"             --keychain "$MAC_SIGN_KEYCHAIN"             --timestamp=none             "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.dmg"
+            codesign \
+            --force \
+            --sign "$MAC_SIGN_IDENTITY" \
+            --keychain "$MAC_SIGN_KEYCHAIN" \
+            --timestamp=none \
+            "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.dmg"
 
-          codesign             --verify             --verbose=2             "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.dmg"
+            codesign \
+            --verify \
+            --verbose=2 \
+            "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.dmg"
 
       - name: Build PKG
         shell: bash
         run: |
-          PKGROOT="pkg-root"
-          UNSIGNED_PKG="Glosslate-v${VERSION}-macos-${{ matrix.arch }}-unsigned.pkg"
-          FINAL_PKG="Glosslate-v${VERSION}-macos-${{ matrix.arch }}.pkg"
+            PKGROOT="pkg-root"
 
-          mkdir -p "$PKGROOT/Applications"
+            mkdir -p "$PKGROOT/Applications"
 
-          cp -R dist/Glosslate.app "$PKGROOT/Applications/Glosslate.app"
+            cp -R dist/Glosslate.app \
+            "$PKGROOT/Applications/Glosslate.app"
 
-          pkgbuild             --root "$PKGROOT"             --identifier "me.tamkungz.glosslate"             --version "$VERSION"             --install-location "/"             "$UNSIGNED_PKG"
-
-          if productsign             --sign "$MAC_SIGN_IDENTITY"             --keychain "$MAC_SIGN_KEYCHAIN"             "$UNSIGNED_PKG"             "$FINAL_PKG"; then
-            rm -f "$UNSIGNED_PKG"
-            pkgutil --check-signature "$FINAL_PKG" || true
-          else
-            mv "$UNSIGNED_PKG" "$FINAL_PKG"
-            echo "PKG native signing skipped because the certificate is not an installer-signing identity."
-          fi
-
+            pkgbuild \
+            --root "$PKGROOT" \
+            --identifier "me.tamkungz.glosslate" \
+            --version "$VERSION" \
+            --install-location "/" \
+            "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.pkg"
+      
       - name: Prepare artifacts
         shell: bash
         run: |

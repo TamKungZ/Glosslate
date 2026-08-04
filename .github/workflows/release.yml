@@ -781,12 +781,33 @@ jobs:
           find downloaded -type f -exec cp {} release/ \;
           ls -lah release
 
+      - name: Install package repository tooling
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils createrepo-c dpkg-dev git
+
       - name: Import GPG key
         shell: bash
         env:
           GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
         run: |
+          set -euo pipefail
+
+          if [ -z "${GPG_PRIVATE_KEY:-}" ]; then
+            echo "GPG_PRIVATE_KEY secret is required for release signing and package repo publishing."
+            exit 1
+          fi
+
           printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+          GPG_FINGERPRINT="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ { print $10; exit }')"
+          if [ -z "$GPG_FINGERPRINT" ]; then
+            echo "Could not detect GPG fingerprint."
+            exit 1
+          fi
+
+          echo "GPG_FINGERPRINT=$GPG_FINGERPRINT" >> "$GITHUB_ENV"
 
       - name: Generate SHA256SUMS
         shell: bash
@@ -829,6 +850,150 @@ jobs:
             --armor \
             --detach-sign \
             SHA256SUMS
+
+      - name: Publish package repositories
+        shell: bash
+        env:
+          PACKAGES_REPO_TOKEN: ${{ secrets.PACKAGES_REPO_TOKEN }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${PACKAGES_REPO_TOKEN:-}" ]; then
+            echo "PACKAGES_REPO_TOKEN is missing; skipping packages.tamkungz.me publish."
+            exit 0
+          fi
+
+          WORK_DIR="$PWD"
+          SITE_DIR="$WORK_DIR/packages-site"
+          REPO_URL="https://x-access-token:${PACKAGES_REPO_TOKEN}@github.com/TamKungZ/packages.tamkungz.me.git"
+
+          git clone --depth 1 "$REPO_URL" "$SITE_DIR"
+
+          cd "$SITE_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          echo "packages.tamkungz.me" > CNAME
+          touch .nojekyll
+          gpg --armor --export "$GPG_FINGERPRINT" > gpg.key
+
+          prune_package_files() {
+            local keep="$1"
+            local pattern="$2"
+            local files=()
+            local remove=()
+
+            mapfile -t files < <(find . -type f -path "$pattern" | sort -V)
+            if [ "${#files[@]}" -le "$keep" ]; then
+              return 0
+            fi
+
+            remove=("${files[@]:0:${#files[@]}-$keep}")
+            for file in "${remove[@]}"; do
+              rm -f "$file" "$file.asc" "$file.sig"
+            done
+          }
+
+          mkdir -p apt/pool/main/g/glosslate
+          mkdir -p apt/dists/stable/main/binary-amd64
+          mkdir -p apps/glosslate
+
+          if [ ! -f apps/glosslate/README.md ]; then
+            cat > apps/glosslate/README.md <<'EOF'
+          # Glosslate
+
+          Glosslate is a cross-platform glossary-aware translation tool for flat JSON localization files.
+          EOF
+          fi
+
+          find "$WORK_DIR/release" -maxdepth 1 -name 'Glosslate-v*-linux-x64.deb' -exec cp {} apt/pool/main/g/glosslate/ \;
+          find "$WORK_DIR/release" -maxdepth 1 -name 'Glosslate-v*-linux-x64.deb.asc' -exec cp {} apt/pool/main/g/glosslate/ \;
+
+          prune_package_files 5 './apt/pool/main/g/glosslate/Glosslate-v*-linux-x64.deb'
+
+          cd "$SITE_DIR/apt"
+          dpkg-scanpackages --multiversion --arch amd64 pool > dists/stable/main/binary-amd64/Packages
+          gzip -9fk dists/stable/main/binary-amd64/Packages
+
+          ARCHITECTURES="amd64"
+          if [ -d dists/stable/main/binary-arm64 ]; then
+            ARCHITECTURES="amd64 arm64"
+          fi
+
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin="TamKungZ_" \
+            -o APT::FTPArchive::Release::Label="TamKungZ_ Packages" \
+            -o APT::FTPArchive::Release::Suite="stable" \
+            -o APT::FTPArchive::Release::Codename="stable" \
+            -o APT::FTPArchive::Release::Architectures="$ARCHITECTURES" \
+            -o APT::FTPArchive::Release::Components="main" \
+            -o APT::FTPArchive::Release::Description="TamKungZ_ APT Package Repository" \
+            release dists/stable > dists/stable/Release
+
+          if [ -n "${GPG_PASSPHRASE:-}" ]; then
+            gpg --batch --yes \
+              --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" \
+              --default-key "$GPG_FINGERPRINT" \
+              --clearsign \
+              -o dists/stable/InRelease dists/stable/Release
+            gpg --batch --yes \
+              --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" \
+              --default-key "$GPG_FINGERPRINT" \
+              -abs \
+              -o dists/stable/Release.gpg dists/stable/Release
+          else
+            gpg --batch --yes \
+              --default-key "$GPG_FINGERPRINT" \
+              --clearsign \
+              -o dists/stable/InRelease dists/stable/Release
+            gpg --batch --yes \
+              --default-key "$GPG_FINGERPRINT" \
+              -abs \
+              -o dists/stable/Release.gpg dists/stable/Release
+          fi
+
+          cd "$SITE_DIR"
+          mkdir -p rpm/x86_64
+          find "$WORK_DIR/release" -maxdepth 1 -name 'Glosslate-v*-linux-x64.rpm' -exec cp {} rpm/x86_64/ \;
+          find "$WORK_DIR/release" -maxdepth 1 -name 'Glosslate-v*-linux-x64.rpm.asc' -exec cp {} rpm/x86_64/ \;
+
+          prune_package_files 5 './rpm/x86_64/Glosslate-v*-linux-x64.rpm'
+
+          createrepo_c rpm/x86_64
+
+          if [ -n "${GPG_PASSPHRASE:-}" ]; then
+            gpg --batch --yes \
+              --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" \
+              --default-key "$GPG_FINGERPRINT" \
+              --detach-sign \
+              --armor \
+              rpm/x86_64/repodata/repomd.xml
+          else
+            gpg --batch --yes \
+              --default-key "$GPG_FINGERPRINT" \
+              --detach-sign \
+              --armor \
+              rpm/x86_64/repodata/repomd.xml
+          fi
+
+          if [ -f scripts/build_site.py ]; then
+            python3 scripts/build_site.py
+          else
+            echo "scripts/build_site.py not found; skipping HTML index generation."
+          fi
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No package repository changes to publish."
+          else
+            git commit -m "Update Glosslate packages $TAG"
+            git push origin HEAD
+          fi
 
       - name: Remove existing release and tag
         shell: bash

@@ -262,14 +262,39 @@ jobs:
             /p "$env:SELF_SIGN_PASSWORD" `
             "$setup"
 
+            if ($LASTEXITCODE -ne 0) {
+            throw "Failed to sign setup EXE"
+            }
+
             & "$env:SIGNTOOL" sign `
             /fd SHA256 `
             /f signing.pfx `
             /p "$env:SELF_SIGN_PASSWORD" `
             "$msi"
 
-            & "$env:SIGNTOOL" verify /pa /v "$setup"
-            & "$env:SIGNTOOL" verify /pa /v "$msi"
+            if ($LASTEXITCODE -ne 0) {
+            throw "Failed to sign MSI"
+            }
+
+            $setupSig = Get-AuthenticodeSignature $setup
+
+            Write-Host "Setup status: $($setupSig.Status)"
+            Write-Host "Setup signer: $($setupSig.SignerCertificate.Subject)"
+            Write-Host "Setup thumbprint: $($setupSig.SignerCertificate.Thumbprint)"
+
+            if (-not $setupSig.SignerCertificate) {
+            throw "Setup EXE has no Authenticode signature"
+            }
+
+            $msiSig = Get-AuthenticodeSignature $msi
+
+            Write-Host "MSI status: $($msiSig.Status)"
+            Write-Host "MSI signer: $($msiSig.SignerCertificate.Subject)"
+            Write-Host "MSI thumbprint: $($msiSig.SignerCertificate.Thumbprint)"
+
+            if (-not $msiSig.SignerCertificate) {
+            throw "MSI has no Authenticode signature"
+            }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4

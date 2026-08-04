@@ -1,0 +1,23 @@
+[
+  {
+    "Term": "Tiri",
+    "Translation": "Tiri",
+    "CaseSensitive": false,
+    "WholeWord": true,
+    "Note": "Character name; keep the canonical spelling"
+  },
+  {
+    "Term": "Old Facility",
+    "Translation": "Archive Facility",
+    "CaseSensitive": false,
+    "WholeWord": true,
+    "Note": "Preferred localized terminology"
+  },
+  {
+    "Term": "Enoa",
+    "Translation": "Enoa",
+    "CaseSensitive": false,
+    "WholeWord": true,
+    "Note": "Character name"
+  }
+]

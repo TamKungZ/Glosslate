@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <OutputType Condition="$([MSBuild]::IsOSPlatform('Windows'))">WinExe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>latest</LangVersion>
+
+    <AssemblyName>Glosslate</AssemblyName>
+    <RootNamespace>Glosslate</RootNamespace>
+    <Product>Glosslate</Product>
+    <Authors>TamKungZ_</Authors>
+    <Description>Cross-platform glossary-aware translation tool for flat JSON localization files.</Description>
+
+    <!--
+      Eto.Forms needs one native UI backend. Select it from the host OS so the
+      same project file can be restored and built on Windows, Linux, and macOS.
+      EtoBackend may also be overridden explicitly, e.g. -p:EtoBackend=Gtk.
+    -->
+    <EtoBackend Condition="'$(EtoBackend)' == '' and $([MSBuild]::IsOSPlatform('Windows'))">Wpf</EtoBackend>
+    <EtoBackend Condition="'$(EtoBackend)' == '' and $([MSBuild]::IsOSPlatform('Linux'))">Gtk</EtoBackend>
+    <EtoBackend Condition="'$(EtoBackend)' == '' and $([MSBuild]::IsOSPlatform('OSX'))">Mac64</EtoBackend>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Eto.Forms" Version="2.11.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(EtoBackend)' == 'Wpf'">
+    <PackageReference Include="Eto.Platform.Wpf" Version="2.11.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(EtoBackend)' == 'Gtk'">
+    <PackageReference Include="Eto.Platform.Gtk" Version="2.11.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(EtoBackend)' == 'Mac64'">
+    <PackageReference Include="Eto.Platform.Mac64" Version="2.11.0" />
+  </ItemGroup>
+
+  <Target Name="ValidateEtoBackend" BeforeTargets="PrepareForBuild">
+    <Error
+      Condition="'$(EtoBackend)' != 'Wpf' and '$(EtoBackend)' != 'Gtk' and '$(EtoBackend)' != 'Mac64'"
+      Text="Unsupported or undetected Eto backend '$(EtoBackend)'. Use Wpf, Gtk, or Mac64 via -p:EtoBackend=&lt;backend&gt;." />
+  </Target>
+
+</Project>

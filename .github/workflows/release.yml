@@ -179,7 +179,7 @@ jobs:
       - name: Harvest files
         shell: pwsh
         run: |
-          & "$env:WIX_BIN\heat.exe" dir "publish\windows-x64" `
+            & "$env:WIX_BIN\heat.exe" dir "publish\windows-x64" `
             -cg PublishedFiles `
             -dr INSTALLFOLDER `
             -gg `
@@ -193,34 +193,41 @@ jobs:
       - name: Create MSI definition
         shell: pwsh
         run: |
-          @'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+            @'
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
             <Product
-              Id="*"
-              Name="Glosslate"
-              Language="1033"
-              Version="${{ env.VERSION }}"
-              Manufacturer="TamKungZ_"
-              UpgradeCode="30DB9FAA-997C-47EC-A77C-A0F25783D63A">
-              <Package
+                Id="*"
+                Name="Glosslate"
+                Language="1033"
+                Version="${{ env.VERSION }}"
+                Manufacturer="TamKungZ_"
+                UpgradeCode="30DB9FAA-997C-47EC-A77C-A0F25783D63A"
+                Platform="x64">
+
+                <Package
                 InstallerVersion="500"
                 Compressed="yes"
-                InstallScope="perUser" />
-              <MajorUpgrade
+                InstallScope="perMachine"
+                Platform="x64" />
+
+                <MajorUpgrade
                 DowngradeErrorMessage="A newer version of Glosslate is already installed." />
-              <MediaTemplate EmbedCab="yes" />
-              <Directory Id="TARGETDIR" Name="SourceDir">
-                <Directory Id="LocalAppDataFolder">
-                  <Directory Id="INSTALLFOLDER" Name="Glosslate" />
+
+                <MediaTemplate EmbedCab="yes" />
+
+                <Directory Id="TARGETDIR" Name="SourceDir">
+                <Directory Id="ProgramFiles64Folder">
+                    <Directory Id="INSTALLFOLDER" Name="Glosslate" />
                 </Directory>
-              </Directory>
-              <Feature Id="ProductFeature" Title="Glosslate" Level="1">
+                </Directory>
+
+                <Feature Id="ProductFeature" Title="Glosslate" Level="1">
                 <ComponentGroupRef Id="PublishedFiles" />
-              </Feature>
+                </Feature>
             </Product>
-          </Wix>
-          '@ | Set-Content Product.wxs
+            </Wix>
+            '@ | Set-Content Product.wxs
 
       - name: Build MSI
         shell: pwsh

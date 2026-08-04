@@ -38,53 +38,81 @@ jobs:
         shell: pwsh
         env:
             SELF_SIGN_PFX_B64: ${{ secrets.SELF_SIGN_PFX_B64 }}
+            SELF_SIGN_CERT_DER_B64: ${{ secrets.SELF_SIGN_CERT_DER_B64 }}
             SELF_SIGN_PASSWORD: ${{ secrets.SELF_SIGN_PASSWORD }}
         run: |
+            $ErrorActionPreference = "Stop"
+
             if ([string]::IsNullOrWhiteSpace($env:SELF_SIGN_PFX_B64)) {
             throw "SELF_SIGN_PFX_B64 is missing"
+            }
+
+            if ([string]::IsNullOrWhiteSpace($env:SELF_SIGN_CERT_DER_B64)) {
+            throw "SELF_SIGN_CERT_DER_B64 is missing"
             }
 
             if ([string]::IsNullOrWhiteSpace($env:SELF_SIGN_PASSWORD)) {
             throw "SELF_SIGN_PASSWORD is missing"
             }
 
-            $clean = ($env:SELF_SIGN_PFX_B64 -replace '\s', '')
+            Write-Host "Decoding PFX..."
+
+            $pfxBase64 = ($env:SELF_SIGN_PFX_B64 -replace '\s', '')
 
             [IO.File]::WriteAllBytes(
             "signing.pfx",
-            [Convert]::FromBase64String($clean)
+            [Convert]::FromBase64String($pfxBase64)
             )
 
-            $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
-            "signing.pfx",
-            $env:SELF_SIGN_PASSWORD,
-            [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+            Write-Host "Decoding certificate..."
+
+            $certBase64 = ($env:SELF_SIGN_CERT_DER_B64 -replace '\s', '')
+
+            [IO.File]::WriteAllBytes(
+            "signing.cer",
+            [Convert]::FromBase64String($certBase64)
             )
 
-            $store = New-Object System.Security.Cryptography.X509Certificates.X509Store(
-            "Root",
-            "CurrentUser"
-            )
+            Write-Host "Adding self-signed certificate to CurrentUser Root..."
 
-            $store.Open(
-            [System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite
-            )
+            certutil.exe `
+            -user `
+            -f `
+            -addstore Root `
+            signing.cer
 
-            $store.Add($cert)
-            $store.Close()
+            if ($LASTEXITCODE -ne 0) {
+            throw "Failed to add certificate to Trusted Root"
+            }
 
-            $signtool = Get-ChildItem `
-            "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" `
-            -ErrorAction SilentlyContinue |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
+            Write-Host "Finding signtool..."
+
+            $kits = Get-ChildItem `
+            "C:\Program Files (x86)\Windows Kits\10\bin" `
+            -Directory |
+            Sort-Object Name -Descending
+
+            $signtool = $null
+
+            foreach ($kit in $kits) {
+            $candidate = Join-Path $kit.FullName "x64\signtool.exe"
+
+            if (Test-Path $candidate) {
+                $signtool = $candidate
+                break
+            }
+            }
 
             if (-not $signtool) {
             throw "signtool.exe not found"
             }
 
-            "SIGNTOOL=$($signtool.FullName)" |
+            Write-Host "SignTool: $signtool"
+
+            "SIGNTOOL=$signtool" |
             Out-File -FilePath $env:GITHUB_ENV -Append
+
+            Write-Host "Windows signing certificate ready."
 
       - name: Restore
         run: dotnet restore Glosslate.csproj -r win-x64
@@ -110,10 +138,18 @@ jobs:
             /p "$env:SELF_SIGN_PASSWORD" `
             "publish\windows-x64\Glosslate.exe"
 
+            if ($LASTEXITCODE -ne 0) {
+            throw "Failed to sign Glosslate.exe"
+            }
+
             & "$env:SIGNTOOL" verify `
             /pa `
             /v `
             "publish\windows-x64\Glosslate.exe"
+
+            if ($LASTEXITCODE -ne 0) {
+            throw "Failed to verify Glosslate.exe"
+            }
 
       - name: Create dist
         shell: pwsh

@@ -8,6 +8,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
 
+    <RuntimeIdentifiers Condition="$([MSBuild]::IsOSPlatform('OSX'))">osx-x64;osx-arm64</RuntimeIdentifiers>
+
     <AssemblyName>Glosslate</AssemblyName>
     <RootNamespace>Glosslate</RootNamespace>
     <Product>Glosslate</Product>

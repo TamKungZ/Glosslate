@@ -37,30 +37,21 @@ jobs:
       - name: Prepare Windows signing certificate
         shell: pwsh
         env:
-          SELF_SIGN_KEY_B64: ${{ secrets.SELF_SIGN_KEY_B64 }}
-          SELF_SIGN_CERT_DER_B64: ${{ secrets.SELF_SIGN_CERT_DER_B64 }}
+          SELF_SIGN_PFX_B64: ${{ secrets.SELF_SIGN_PFX_B64 }}
           SELF_SIGN_PASSWORD: ${{ secrets.SELF_SIGN_PASSWORD }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:SELF_SIGN_KEY_B64)) {
-            throw "SELF_SIGN_KEY_B64 is missing"
-          }
-
-          if ([string]::IsNullOrWhiteSpace($env:SELF_SIGN_CERT_DER_B64)) {
-            throw "SELF_SIGN_CERT_DER_B64 is missing"
+          if ([string]::IsNullOrWhiteSpace($env:SELF_SIGN_PFX_B64)) {
+            throw "SELF_SIGN_PFX_B64 is missing"
           }
 
           if ([string]::IsNullOrWhiteSpace($env:SELF_SIGN_PASSWORD)) {
             throw "SELF_SIGN_PASSWORD is missing"
           }
 
+          $clean = ($env:SELF_SIGN_PFX_B64 -replace '\s', '')
           [IO.File]::WriteAllBytes(
-            "signing.key",
-            [Convert]::FromBase64String($env:SELF_SIGN_KEY_B64)
-          )
-
-          [IO.File]::WriteAllBytes(
-            "signing.der.cer",
-            [Convert]::FromBase64String($env:SELF_SIGN_CERT_DER_B64)
+            "signing.pfx",
+            [Convert]::FromBase64String($clean)
           )
 
           $openssl = (Get-Command openssl -ErrorAction SilentlyContinue).Source
@@ -70,18 +61,29 @@ jobs:
             $openssl = (Get-Command openssl -ErrorAction Stop).Source
           }
 
-          & $openssl x509 `
-            -inform DER `
-            -in signing.der.cer `
-            -out signing.pem
-
           & $openssl pkcs12 `
-            -export `
-            -inkey signing.key `
+            -in signing.pfx `
+            -clcerts `
+            -nokeys `
+            -out signing.pem `
+            -passin "pass:$env:SELF_SIGN_PASSWORD"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to read signing.pfx"
+          }
+
+          & $openssl x509 `
             -in signing.pem `
-            -out signing.pfx `
-            -passout "pass:$env:SELF_SIGN_PASSWORD" `
-            -name "Glosslate Self Signed"
+            -outform DER `
+            -out signing.cer
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to extract certificate from signing.pfx"
+          }
+
+          Import-Certificate `
+            -FilePath signing.cer `
+            -CertStoreLocation Cert:\CurrentUser\Root | Out-Null
 
           $signtool = Get-ChildItem `
             "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" `
@@ -462,46 +464,37 @@ jobs:
       - name: Build AppImage
         shell: bash
         run: |
+          set -euo pipefail
+
           APPDIR="$PWD/AppDir"
 
-          mkdir -p "$APPDIR/usr/bin"
           mkdir -p "$APPDIR/usr/lib/glosslate"
           mkdir -p "$APPDIR/usr/share/applications"
           mkdir -p "$APPDIR/usr/share/icons/hicolor/512x512/apps"
 
           cp -a publish/linux-x64/. "$APPDIR/usr/lib/glosslate/"
-
-          cat > "$APPDIR/usr/bin/glosslate" <<'EOF'
-          #!/bin/sh
-          HERE="$(dirname "$(readlink -f "$0")")"
-          exec "$HERE/../lib/glosslate/Glosslate" "$@"
-          EOF
-
-          chmod +x "$APPDIR/usr/bin/glosslate"
-
           cp packaging/linux/glosslate.desktop "$APPDIR/usr/share/applications/glosslate.desktop"
-          cp Assets/app.png "$APPDIR/usr/share/icons/hicolor/512x512/apps/glosslate.png"
           cp packaging/linux/glosslate.desktop "$APPDIR/glosslate.desktop"
+          cp Assets/app.png "$APPDIR/usr/share/icons/hicolor/512x512/apps/glosslate.png"
           cp Assets/app.png "$APPDIR/glosslate.png"
 
-          ln -s glosslate.png "$APPDIR/.DirIcon"
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          export DOTNET_EnableDiagnostics=0
+          exec "$HERE/usr/lib/glosslate/Glosslate" "$@"
+          EOF
 
-          curl -L \
-            -o linuxdeploy.AppImage \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x "$APPDIR/AppRun"
+          chmod +x "$APPDIR/usr/lib/glosslate/Glosslate"
 
-          chmod +x linuxdeploy.AppImage
+          ln -sf glosslate.png "$APPDIR/.DirIcon"
 
-          ./linuxdeploy.AppImage \
-            --appdir "$APPDIR" \
-            --desktop-file "$APPDIR/glosslate.desktop" \
-            --icon-file "$APPDIR/glosslate.png" \
-            --output appimage
+          curl -L             -o appimagetool.AppImage             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
 
-          APPIMAGE_FILE="$(find . -maxdepth 1 -name '*.AppImage' | head -n 1)"
+          chmod +x appimagetool.AppImage
 
-          mv "$APPIMAGE_FILE" \
-            "dist/Glosslate-v${VERSION}-linux-x86_64.AppImage"
+          ARCH=x86_64           APPIMAGE_EXTRACT_AND_RUN=1           ./appimagetool.AppImage             "$APPDIR"             "dist/Glosslate-v${VERSION}-linux-x86_64.AppImage"
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
@@ -545,25 +538,20 @@ jobs:
       - name: Prepare macOS signing certificate
         shell: bash
         env:
-          SELF_SIGN_KEY_B64: ${{ secrets.SELF_SIGN_KEY_B64 }}
-          SELF_SIGN_CERT_DER_B64: ${{ secrets.SELF_SIGN_CERT_DER_B64 }}
+          SELF_SIGN_PFX_B64: ${{ secrets.SELF_SIGN_PFX_B64 }}
           SELF_SIGN_PASSWORD: ${{ secrets.SELF_SIGN_PASSWORD }}
-          KEYCHAIN_PASSWORD: ${{ secrets.SELF_SIGN_PASSWORD }}
         run: |
           set -euo pipefail
 
-          test -n "$SELF_SIGN_KEY_B64"
-          test -n "$SELF_SIGN_CERT_DER_B64"
+          test -n "$SELF_SIGN_PFX_B64"
           test -n "$SELF_SIGN_PASSWORD"
 
-          printf '%s' "$SELF_SIGN_KEY_B64" | base64 --decode > signing.key
-          printf '%s' "$SELF_SIGN_CERT_DER_B64" | base64 --decode > signing.der.cer
+          printf '%s' "$SELF_SIGN_PFX_B64"             | tr -d '[:space:]'             | base64 --decode             > signing.p12
 
-          openssl x509             -inform DER             -in signing.der.cer             -out signing.pem
-
-          openssl pkcs12             -export             -inkey signing.key             -in signing.pem             -out signing.p12             -passout "pass:$SELF_SIGN_PASSWORD"             -name "Glosslate Self Signed"
+          openssl pkcs12             -in signing.p12             -clcerts             -nokeys             -out signing.pem             -passin "pass:$SELF_SIGN_PASSWORD"
 
           KEYCHAIN="$RUNNER_TEMP/glosslate-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
 
           security create-keychain             -p "$KEYCHAIN_PASSWORD"             "$KEYCHAIN"
 
@@ -573,13 +561,15 @@ jobs:
 
           security import signing.p12             -k "$KEYCHAIN"             -P "$SELF_SIGN_PASSWORD"             -T /usr/bin/codesign             -T /usr/bin/security             -T /usr/bin/productsign
 
-          security add-trusted-cert             -d             -r trustRoot             -k "$KEYCHAIN"             signing.pem
+          security add-trusted-cert             -r trustRoot             -k "$KEYCHAIN"             signing.pem
 
           security set-key-partition-list             -S apple-tool:,apple:,codesign:             -s             -k "$KEYCHAIN_PASSWORD"             "$KEYCHAIN"
 
+          security list-keychains             -d user             -s "$KEYCHAIN" login.keychain-db
+
           IDENTITY="$(
             security find-identity               -v               -p codesigning               "$KEYCHAIN" |
-            awk 'NR == 1 { print $2 }'
+            awk '/[0-9A-F]{40}/ { print $2; exit }'
           )"
 
           if [ -z "$IDENTITY" ]; then
@@ -789,12 +779,23 @@ jobs:
             --detach-sign \
             SHA256SUMS
 
+      - name: Remove existing release and tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            git push origin ":refs/tags/$TAG"
+          fi
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$TAG" \
-            release/* \
-            --target "${{ github.sha }}" \
-            --title "Glosslate $TAG" \
-            --generate-notes
+          gh release create "$TAG"             release/*             --target "${{ github.sha }}"             --title "Glosslate $TAG"             --generate-notes

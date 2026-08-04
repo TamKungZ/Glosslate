@@ -1,0 +1,631 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  PRODUCT_NAME: Glosslate
+
+jobs:
+  windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set version
+        shell: pwsh
+        run: |
+          $v = "${{ inputs.version }}".TrimStart("v")
+          "VERSION=$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "TAG=v$v" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Restore
+        run: dotnet restore Glosslate.csproj -r win-x64
+
+      - name: Publish
+        run: >
+          dotnet publish Glosslate.csproj
+          -c Release
+          -r win-x64
+          --self-contained true
+          --no-restore
+          -p:Version=${{ env.VERSION }}
+          -o publish/windows-x64
+
+      - name: Create dist
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force dist | Out-Null
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "publish/windows-x64/*" `
+            -DestinationPath "dist/Glosslate-v${{ env.VERSION }}-windows-x64-portable.zip"
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Create Inno Setup script
+        shell: pwsh
+        run: |
+          @'
+          #define MyAppName "Glosslate"
+          #define MyAppPublisher "TamKungZ_"
+          #define MyAppURL "https://tamkungz.me"
+          #define MyAppExeName "Glosslate.exe"
+          #define MyAppVersion "${{ env.VERSION }}"
+
+          [Setup]
+          AppId={{81D5259C-87D0-4934-B017-E4B53C618812}
+          AppName={#MyAppName}
+          AppVersion={#MyAppVersion}
+          AppPublisher={#MyAppPublisher}
+          AppPublisherURL={#MyAppURL}
+          AppSupportURL={#MyAppURL}
+          AppUpdatesURL={#MyAppURL}
+          DefaultDirName={autopf}\Glosslate
+          DefaultGroupName=Glosslate
+          DisableProgramGroupPage=yes
+          OutputDir=dist
+          OutputBaseFilename=Glosslate-v${{ env.VERSION }}-windows-x64-setup
+          Compression=lzma2
+          SolidCompression=yes
+          WizardStyle=modern
+          ArchitecturesAllowed=x64compatible
+          ArchitecturesInstallIn64BitMode=x64compatible
+          UninstallDisplayIcon={app}\Glosslate.exe
+          SetupIconFile=Assets\app.ico
+          PrivilegesRequired=lowest
+
+          [Files]
+          Source: "publish\windows-x64\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+          [Icons]
+          Name: "{autoprograms}\Glosslate"; Filename: "{app}\Glosslate.exe"
+          Name: "{autodesktop}\Glosslate"; Filename: "{app}\Glosslate.exe"; Tasks: desktopicon
+
+          [Tasks]
+          Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional icons:"
+          '@ | Set-Content packaging-windows.iss
+
+      - name: Build EXE installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" packaging-windows.iss
+
+      - name: Install WiX
+        shell: pwsh
+        run: choco install wixtoolset -y --no-progress
+
+      - name: Find WiX
+        shell: pwsh
+        run: |
+          $wix = Get-ChildItem "${env:ProgramFiles(x86)}\WiX Toolset v3.*\bin" -Directory -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $wix) {
+            throw "WiX Toolset not found"
+          }
+          "WIX_BIN=$($wix.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Harvest files
+        shell: pwsh
+        run: |
+          & "$env:WIX_BIN\heat.exe" dir "publish\windows-x64" `
+            -cg PublishedFiles `
+            -dr INSTALLFOLDER `
+            -gg `
+            -scom `
+            -sreg `
+            -sfrag `
+            -srd `
+            -var var.PublishDir `
+            -out Harvest.wxs
+
+      - name: Create MSI definition
+        shell: pwsh
+        run: |
+          @'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+            <Product
+              Id="*"
+              Name="Glosslate"
+              Language="1033"
+              Version="${{ env.VERSION }}"
+              Manufacturer="TamKungZ_"
+              UpgradeCode="30DB9FAA-997C-47EC-A77C-A0F25783D63A">
+              <Package
+                InstallerVersion="500"
+                Compressed="yes"
+                InstallScope="perUser" />
+              <MajorUpgrade
+                DowngradeErrorMessage="A newer version of Glosslate is already installed." />
+              <MediaTemplate EmbedCab="yes" />
+              <Directory Id="TARGETDIR" Name="SourceDir">
+                <Directory Id="LocalAppDataFolder">
+                  <Directory Id="INSTALLFOLDER" Name="Glosslate" />
+                </Directory>
+              </Directory>
+              <Feature Id="ProductFeature" Title="Glosslate" Level="1">
+                <ComponentGroupRef Id="PublishedFiles" />
+              </Feature>
+            </Product>
+          </Wix>
+          '@ | Set-Content Product.wxs
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          & "$env:WIX_BIN\candle.exe" `
+            "-dPublishDir=$(Resolve-Path publish\windows-x64)" `
+            Product.wxs `
+            Harvest.wxs
+
+          & "$env:WIX_BIN\light.exe" `
+            Product.wixobj `
+            Harvest.wixobj `
+            -o "dist\Glosslate-v${{ env.VERSION }}-windows-x64.msi"
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-windows
+          path: dist/*
+          if-no-files-found: error
+
+  linux:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y fakeroot dpkg-dev rpm desktop-file-utils libfuse2 file curl
+
+      - name: Restore
+        run: dotnet restore Glosslate.csproj -r linux-x64
+
+      - name: Publish
+        run: |
+          dotnet publish Glosslate.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained true \
+            --no-restore \
+            -p:Version="${VERSION}" \
+            -o publish/linux-x64
+
+      - name: Create dist
+        run: mkdir -p dist
+
+      - name: Build tar.gz
+        shell: bash
+        run: |
+          mkdir -p stage/Glosslate
+          cp -a publish/linux-x64/. stage/Glosslate/
+          tar -C stage -czf "dist/Glosslate-v${VERSION}-linux-x64.tar.gz" Glosslate
+
+      - name: Build DEB
+        shell: bash
+        run: |
+          ROOT="deb-root"
+
+          mkdir -p "$ROOT/DEBIAN"
+          mkdir -p "$ROOT/usr/lib/glosslate"
+          mkdir -p "$ROOT/usr/bin"
+          mkdir -p "$ROOT/usr/share/applications"
+          mkdir -p "$ROOT/usr/share/icons/hicolor/512x512/apps"
+
+          cp -a publish/linux-x64/. "$ROOT/usr/lib/glosslate/"
+
+          ln -s /usr/lib/glosslate/Glosslate "$ROOT/usr/bin/glosslate"
+
+          cp packaging/linux/glosslate.desktop "$ROOT/usr/share/applications/glosslate.desktop"
+          cp Assets/app.png "$ROOT/usr/share/icons/hicolor/512x512/apps/glosslate.png"
+
+          cat > "$ROOT/DEBIAN/control" <<EOF
+          Package: glosslate
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: TamKungZ_ <dev@tamkungz.me>
+          Homepage: https://tamkungz.me
+          Description: Glossary-aware translation tool
+           Cross-platform glossary-aware translation tool for flat JSON localization files.
+          EOF
+
+          cat > "$ROOT/DEBIAN/postinst" <<'EOF'
+          #!/bin/sh
+          set -e
+          if command -v update-desktop-database >/dev/null 2>&1; then
+            update-desktop-database /usr/share/applications || true
+          fi
+          if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+            gtk-update-icon-cache -q -t -f /usr/share/icons/hicolor || true
+          fi
+          exit 0
+          EOF
+
+          chmod 755 "$ROOT/DEBIAN/postinst"
+          chmod 755 "$ROOT/usr/lib/glosslate/Glosslate"
+
+          fakeroot dpkg-deb \
+            --build "$ROOT" \
+            "dist/Glosslate-v${VERSION}-linux-x64.deb"
+
+      - name: Build RPM
+        shell: bash
+        run: |
+          RPMROOT="$PWD/rpmbuild"
+
+          mkdir -p \
+            "$RPMROOT/BUILD" \
+            "$RPMROOT/RPMS" \
+            "$RPMROOT/SOURCES" \
+            "$RPMROOT/SPECS" \
+            "$RPMROOT/SRPMS"
+
+          tar \
+            -C publish/linux-x64 \
+            -czf "$RPMROOT/SOURCES/glosslate-${VERSION}.tar.gz" \
+            .
+
+          cat > "$RPMROOT/SPECS/glosslate.spec" <<EOF
+          Name:           glosslate
+          Version:        ${VERSION}
+          Release:        1%{?dist}
+          Summary:        Glossary-aware translation tool
+          License:        Proprietary
+          URL:            https://tamkungz.me
+          Packager:       TamKungZ_ <dev@tamkungz.me>
+          BuildArch:      x86_64
+
+          %description
+          Cross-platform glossary-aware translation tool for flat JSON localization files.
+
+          %prep
+
+          %build
+
+          %install
+          rm -rf %{buildroot}
+
+          mkdir -p %{buildroot}/usr/lib/glosslate
+          mkdir -p %{buildroot}/usr/bin
+          mkdir -p %{buildroot}/usr/share/applications
+          mkdir -p %{buildroot}/usr/share/icons/hicolor/512x512/apps
+
+          tar -xzf %{_sourcedir}/glosslate-${VERSION}.tar.gz \
+            -C %{buildroot}/usr/lib/glosslate
+
+          ln -s /usr/lib/glosslate/Glosslate \
+            %{buildroot}/usr/bin/glosslate
+
+          install -m 644 ${GITHUB_WORKSPACE}/packaging/linux/glosslate.desktop \
+            %{buildroot}/usr/share/applications/glosslate.desktop
+
+          install -m 644 ${GITHUB_WORKSPACE}/Assets/app.png \
+            %{buildroot}/usr/share/icons/hicolor/512x512/apps/glosslate.png
+
+          chmod 755 %{buildroot}/usr/lib/glosslate/Glosslate
+
+          %files
+          /usr/lib/glosslate
+          /usr/bin/glosslate
+          /usr/share/applications/glosslate.desktop
+          /usr/share/icons/hicolor/512x512/apps/glosslate.png
+          EOF
+
+          rpmbuild \
+            --define "_topdir $RPMROOT" \
+            -bb "$RPMROOT/SPECS/glosslate.spec"
+
+          RPM_FILE="$(find "$RPMROOT/RPMS" -name '*.rpm' | head -n 1)"
+
+          cp "$RPM_FILE" \
+            "dist/Glosslate-v${VERSION}-linux-x64.rpm"
+
+      - name: Build AppImage
+        shell: bash
+        run: |
+          APPDIR="$PWD/AppDir"
+
+          mkdir -p "$APPDIR/usr/bin"
+          mkdir -p "$APPDIR/usr/lib/glosslate"
+          mkdir -p "$APPDIR/usr/share/applications"
+          mkdir -p "$APPDIR/usr/share/icons/hicolor/512x512/apps"
+
+          cp -a publish/linux-x64/. "$APPDIR/usr/lib/glosslate/"
+
+          cat > "$APPDIR/usr/bin/glosslate" <<'EOF'
+          #!/bin/sh
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/../lib/glosslate/Glosslate" "$@"
+          EOF
+
+          chmod +x "$APPDIR/usr/bin/glosslate"
+
+          cp packaging/linux/glosslate.desktop "$APPDIR/usr/share/applications/glosslate.desktop"
+          cp Assets/app.png "$APPDIR/usr/share/icons/hicolor/512x512/apps/glosslate.png"
+          cp packaging/linux/glosslate.desktop "$APPDIR/glosslate.desktop"
+          cp Assets/app.png "$APPDIR/glosslate.png"
+
+          ln -s glosslate.png "$APPDIR/.DirIcon"
+
+          curl -L \
+            -o linuxdeploy.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+
+          chmod +x linuxdeploy.AppImage
+
+          ./linuxdeploy.AppImage \
+            --appdir "$APPDIR" \
+            --desktop-file "$APPDIR/glosslate.desktop" \
+            --icon-file "$APPDIR/glosslate.png" \
+            --output appimage
+
+          APPIMAGE_FILE="$(find . -maxdepth 1 -name '*.AppImage' | head -n 1)"
+
+          mv "$APPIMAGE_FILE" \
+            "dist/Glosslate-v${VERSION}-linux-x86_64.AppImage"
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-linux
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            rid: osx-arm64
+            arch: arm64
+
+          - os: macos-15-intel
+            rid: osx-x64
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+
+      - name: Restore
+        run: |
+          dotnet restore Glosslate.csproj \
+            -r ${{ matrix.rid }}
+
+      - name: Publish
+        run: |
+          dotnet publish Glosslate.csproj \
+            -c Release \
+            -r ${{ matrix.rid }} \
+            --self-contained true \
+            --no-restore \
+            -p:Version="${VERSION}" \
+            -o publish/macos
+
+      - name: Build app bundle
+        shell: bash
+        run: |
+          APP="dist/Glosslate.app"
+
+          mkdir -p "$APP/Contents/MacOS"
+          mkdir -p "$APP/Contents/Resources"
+
+          cp -a publish/macos/. "$APP/Contents/MacOS/"
+          cp packaging/macos/Info.plist "$APP/Contents/Info.plist"
+          cp Assets/app.icns "$APP/Contents/Resources/app.icns"
+
+          chmod +x "$APP/Contents/MacOS/Glosslate"
+
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleShortVersionString ${VERSION}" \
+            "$APP/Contents/Info.plist"
+
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleVersion ${VERSION}" \
+            "$APP/Contents/Info.plist"
+
+      - name: Create app ZIP
+        shell: bash
+        run: |
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            dist/Glosslate.app \
+            "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.app.zip"
+
+      - name: Build DMG
+        shell: bash
+        run: |
+          DMGROOT="dmg-root"
+
+          mkdir -p "$DMGROOT"
+
+          cp -R dist/Glosslate.app "$DMGROOT/Glosslate.app"
+          ln -s /Applications "$DMGROOT/Applications"
+
+          hdiutil create \
+            -volname "Glosslate" \
+            -srcfolder "$DMGROOT" \
+            -ov \
+            -format UDZO \
+            "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.dmg"
+
+      - name: Build PKG
+        shell: bash
+        run: |
+          PKGROOT="pkg-root"
+
+          mkdir -p "$PKGROOT/Applications"
+
+          cp -R dist/Glosslate.app "$PKGROOT/Applications/Glosslate.app"
+
+          pkgbuild \
+            --root "$PKGROOT" \
+            --identifier "me.tamkungz.glosslate" \
+            --version "$VERSION" \
+            --install-location "/" \
+            "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.pkg"
+
+      - name: Prepare artifacts
+        shell: bash
+        run: |
+          mkdir -p release-files
+
+          mv "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.app.zip" release-files/
+          mv "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.dmg" release-files/
+          mv "Glosslate-v${VERSION}-macos-${{ matrix.arch }}.pkg" release-files/
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-${{ matrix.arch }}
+          path: release-files/*
+          if-no-files-found: error
+
+  release:
+    needs:
+      - windows
+      - linux
+      - macos
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set version
+        shell: bash
+        run: |
+          VERSION="${{ inputs.version }}"
+          VERSION="${VERSION#v}"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TAG=v$VERSION" >> "$GITHUB_ENV"
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+          merge-multiple: true
+
+      - name: Prepare release files
+        shell: bash
+        run: |
+          mkdir -p release
+          find downloaded -type f -exec cp {} release/ \;
+          ls -lah release
+
+      - name: Import GPG key
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          printf '%s' "$GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Generate SHA256SUMS
+        shell: bash
+        working-directory: release
+        run: |
+          find . \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\n' \
+            | sort \
+            | xargs sha256sum \
+            > SHA256SUMS
+
+      - name: Sign files
+        shell: bash
+        working-directory: release
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          for file in *; do
+            if [ "$file" = "SHA256SUMS" ]; then
+              continue
+            fi
+
+            gpg \
+              --batch \
+              --yes \
+              --pinentry-mode loopback \
+              --passphrase "$GPG_PASSPHRASE" \
+              --armor \
+              --detach-sign \
+              "$file"
+          done
+
+          gpg \
+            --batch \
+            --yes \
+            --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --armor \
+            --detach-sign \
+            SHA256SUMS
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" \
+            release/* \
+            --target "${{ github.sha }}" \
+            --title "Glosslate $TAG" \
+            --generate-notes

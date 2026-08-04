@@ -15,6 +15,11 @@
     <RootNamespace>Glosslate</RootNamespace>
     <Product>Glosslate</Product>
     <Authors>TamKungZ_</Authors>
+    <Company>TamKungZ_</Company>
+    <Copyright>Copyright © TamKungZ_</Copyright>
+    <PackageProjectUrl>https://dev.tamkungz.me</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/TamKungZ/Glosslate</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
     <Description>Cross-platform glossary-aware translation tool for flat JSON localization files.</Description>
 
     <ApplicationIcon Condition="$([MSBuild]::IsOSPlatform('Windows'))">Assets/app.ico</ApplicationIcon>

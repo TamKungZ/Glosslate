@@ -202,8 +202,7 @@ jobs:
                 Language="1033"
                 Version="${{ env.VERSION }}"
                 Manufacturer="TamKungZ_"
-                UpgradeCode="30DB9FAA-997C-47EC-A77C-A0F25783D63A"
-                Platform="x64">
+                UpgradeCode="30DB9FAA-997C-47EC-A77C-A0F25783D63A">
 
                 <Package
                 InstallerVersion="500"
@@ -232,15 +231,23 @@ jobs:
       - name: Build MSI
         shell: pwsh
         run: |
-          & "$env:WIX_BIN\candle.exe" `
+            & "$env:WIX_BIN\candle.exe" `
             "-dPublishDir=$(Resolve-Path publish\windows-x64)" `
             Product.wxs `
             Harvest.wxs
 
-          & "$env:WIX_BIN\light.exe" `
+            if ($LASTEXITCODE -ne 0) {
+            throw "WiX compile failed"
+            }
+
+            & "$env:WIX_BIN\light.exe" `
             Product.wixobj `
             Harvest.wixobj `
             -o "dist\Glosslate-v${{ env.VERSION }}-windows-x64.msi"
+
+            if ($LASTEXITCODE -ne 0) {
+            throw "WiX link failed"
+            }
 
       - name: Sign Windows installers
         shell: pwsh
